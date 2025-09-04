@@ -37,11 +37,12 @@ const handleSendMessage = async (e) => {
 ```
 
 **Cách hoạt động:**
-- `e.preventDefault()`: Ngăn browser reload trang khi submit form
-- `text.trim()`: Loại bỏ khoảng trắng đầu/cuối chuỗi
-- `setIsSending(true/false)`: Quản lý trạng thái loading UI
-- `sendMessage()`: Gọi function từ store để xử lý gửi tin nhắn
-- `setText("")`: Xóa nội dung input sau khi gửi thành công
+1. **`e.preventDefault()`**: Ngăn browser tự động reload trang khi submit form (hành vi mặc định của HTML form)
+2. **`text.trim()`**: Loại bỏ khoảng trắng thừa ở đầu và cuối chuỗi để tránh gửi tin nhắn rỗng
+3. **`setIsSending(true)`**: Hiển thị loading spinner/button disabled để user biết đang gửi
+4. **`sendMessage()`**: Gọi function từ Zustand store để xử lý logic gửi tin nhắn
+5. **`setText("")`**: Xóa nội dung input field sau khi gửi thành công
+6. **`setIsSending(false)`**: Tắt loading state trong mọi trường hợp (thành công hoặc lỗi)
 
 ### **2. Frontend - State Management**
 
@@ -73,11 +74,16 @@ sendMessage: async (messageData) => {
 ```
 
 **Cách hoạt động:**
-- `get()`: Lấy state hiện tại từ Zustand store
-- `selectedUser/selectedGroup`: Xác định loại chat (cá nhân/nhóm)
-- `axiosInstance.post()`: Gửi HTTP POST request đến backend API
-- `[...messages, res.data]`: Spread operator để thêm tin nhắn mới vào array
-- `set()`: Cập nhật state trong store để UI re-render
+1. **`get()`**: Lấy toàn bộ state hiện tại từ Zustand store (messages, selectedUser, selectedGroup)
+2. **Kiểm tra loại chat**: 
+   - Nếu `selectedGroup` có giá trị → đang chat nhóm → gửi đến API `/groups/{id}/messages`
+   - Nếu `selectedUser` có giá trị → đang chat cá nhân → gửi đến API `/messages/send/{id}`
+3. **`axiosInstance.post()`**: Gửi HTTP POST request với dữ liệu tin nhắn đến backend
+4. **`[...messages, res.data]`: Spread operator tạo array mới bằng cách:
+   - Copy tất cả tin nhắn cũ (`...messages`)
+   - Thêm tin nhắn mới vào cuối (`res.data`)
+5. **`set()`**: Cập nhật state trong store → trigger re-render UI tự động
+6. **Error handling**: Nếu lỗi → hiển thị toast notification cho user
 
 ### **3. Backend - Controller**
 
@@ -121,13 +127,22 @@ export const sendMessage = async (req, res) => {
 ```
 
 **Cách hoạt động:**
-- `req.body`: Lấy dữ liệu từ request body (text, image, groupId)
-- `req.params`: Lấy tham số từ URL (receiverId)
-- `req.user._id`: Lấy user ID từ JWT middleware
-- `new Message()`: Tạo instance của Mongoose model
-- `await newMessage.save()`: Lưu tin nhắn vào MongoDB
-- `io.to(socketId).emit()`: Gửi event real-time qua Socket.IO
-- `res.status(201).json()`: Trả về tin nhắn đã tạo cho frontend
+1. **Lấy dữ liệu từ request**:
+   - `req.body`: Lấy nội dung tin nhắn từ frontend (text, image, groupId)
+   - `req.params`: Lấy ID người nhận từ URL (ví dụ: `/messages/send/123` → receiverId = "123")
+   - `req.user._id`: Lấy ID người gửi từ JWT token (đã được xác thực bởi middleware)
+
+2. **Validation**: Kiểm tra tin nhắn không rỗng (có text hoặc image)
+
+3. **Tạo tin nhắn mới**:
+   - `new Message()`: Tạo object tin nhắn theo schema MongoDB
+   - `await newMessage.save()`: Lưu tin nhắn vào database MongoDB
+
+4. **Real-time broadcasting**:
+   - Nếu là tin nhắn nhóm: `io.to('group:groupId').emit()` → gửi đến tất cả thành viên nhóm
+   - Nếu là tin nhắn cá nhân: `io.to(socketId).emit()` → gửi đến người nhận cụ thể
+
+5. **Response**: `res.status(201).json()` → trả về tin nhắn đã tạo cho frontend
 
 ---
 
@@ -161,12 +176,21 @@ listenMessages: () => {
 ```
 
 **Cách hoạt động:**
-- `socket.off()`: Xóa event listener cũ để tránh memory leak
-- `socket.on()`: Lắng nghe event từ server
-- `newMessage.groupId !== selectedGroup._id`: Kiểm tra tin nhắn có thuộc nhóm hiện tại không
-- `newMessage.senderId !== selectedUser._id`: Kiểm tra tin nhắn có từ user đang chat không
-- `[...get().messages, newMessage]`: Immutable update - tạo array mới với tin nhắn mới
-- `set()`: Cập nhật state để UI tự động re-render
+1. **Lấy socket connection**: `useAuthStore.getState().socket` → lấy WebSocket connection hiện tại
+
+2. **Cleanup listeners cũ**: `socket.off()` → xóa các event listener cũ để tránh:
+   - Memory leak (tích lũy listeners)
+   - Duplicate messages (nhận tin nhắn nhiều lần)
+
+3. **Lắng nghe tin nhắn mới**:
+   - **Chat nhóm**: `socket.on("newGroupMessage")` → chỉ xử lý tin nhắn của nhóm đang chat
+   - **Chat cá nhân**: `socket.on("newMessage")` → chỉ xử lý tin nhắn từ user đang chat
+
+4. **Validation**: Kiểm tra tin nhắn có thuộc về chat hiện tại không:
+   - `newMessage.groupId !== selectedGroup._id` → tin nhắn nhóm
+   - `newMessage.senderId !== selectedUser._id` → tin nhắn cá nhân
+
+5. **Cập nhật UI**: `[...get().messages, newMessage]` → tạo array mới (immutable) và `set()` để trigger re-render
 
 ---
 
@@ -203,13 +227,22 @@ io.on("connection", (socket) => {
 ```
 
 **Cách hoạt động:**
-- `userSocketMap`: Object lưu trữ mapping giữa userId và socketId
-- `socket.handshake.query.userId`: Lấy userId từ query string khi connect
-- `userSocketMap[userId] = socket.id`: Lưu mapping để biết user nào đang online
-- `socket.broadcast.emit()`: Gửi event cho tất cả client trừ client hiện tại
-- `io.emit()`: Gửi event cho tất cả clients
-- `delete userSocketMap[userId]`: Xóa user khỏi map khi disconnect
-- `Object.keys(userSocketMap)`: Lấy danh sách tất cả user đang online
+1. **Khi user kết nối**:
+   - `socket.handshake.query.userId`: Lấy userId từ query string (frontend gửi khi connect)
+   - `userSocketMap[userId] = socket.id`: Lưu mapping userId → socketId để biết user nào đang online
+
+2. **Thông báo user online**:
+   - `socket.broadcast.emit("userOnline", userId)`: Thông báo cho TẤT CẢ user khác (trừ user vừa connect)
+   - `io.emit("getOnlineUsers", onlineUserIds)`: Gửi danh sách user online cho TẤT CẢ clients
+
+3. **Khi user disconnect**:
+   - `delete userSocketMap[userId]`: Xóa user khỏi map (không còn online)
+   - `socket.broadcast.emit("userOffline", userId)`: Thông báo user đã offline
+   - Cập nhật lại danh sách user online cho tất cả clients
+
+4. **Quản lý state**:
+   - `userSocketMap`: Object lưu trữ {userId: socketId} để biết user nào đang online
+   - `Object.keys(userSocketMap)`: Lấy danh sách tất cả userId đang online
 
 ---
 
@@ -248,12 +281,21 @@ socket.on("initiateCall", ({ receiverId, callType = "voice" }) => {
 ```
 
 **Cách hoạt động:**
-- `callId`: Tạo unique identifier cho cuộc gọi (callerId-receiverId-timestamp)
-- `videoCallMap`: Object lưu trữ thông tin các cuộc gọi đang diễn ra
-- `status: "ringing"`: Trạng thái cuộc gọi (ringing, accepted, rejected, ended)
-- `getReceiverSocketId()`: Lấy socket ID của người nhận cuộc gọi
-- `io.to(receiverSocketId).emit()`: Gửi event đến socket cụ thể
-- `socket.emit("callInitiated")`: Xác nhận cuộc gọi đã được khởi tạo
+1. **Tạo cuộc gọi**:
+   - `callId`: Tạo unique ID = `${callerId}-${receiverId}-${timestamp}` (ví dụ: "123-456-1704067200000")
+   - `videoCallMap[callId]`: Lưu thông tin cuộc gọi vào memory với status "ringing"
+
+2. **Gửi thông báo cuộc gọi**:
+   - `getReceiverSocketId(receiverId)`: Tìm socket ID của người nhận cuộc gọi
+   - `io.to(receiverSocketId).emit("incomingCall")`: Gửi thông báo cuộc gọi đến đến người nhận
+
+3. **Xác nhận khởi tạo**:
+   - `socket.emit("callInitiated")`: Thông báo cho người gọi rằng cuộc gọi đã được khởi tạo thành công
+
+4. **Quản lý trạng thái**:
+   - `status: "ringing"`: Cuộc gọi đang đổ chuông
+   - Các trạng thái khác: "accepted", "rejected", "ended"
+   - `videoCallMap`: Lưu trữ tất cả cuộc gọi đang diễn ra trong memory
 
 ### **Frontend - Call Handling**
 
@@ -291,13 +333,21 @@ useEffect(() => {
 ```
 
 **Cách hoạt động:**
-- `socket.on("incomingCall")`: Lắng nghe cuộc gọi đến
-- `handleIncomingCall()`: Xử lý hiển thị modal cuộc gọi
-- `socket.on("callAccepted")`: Lắng nghe khi cuộc gọi được chấp nhận
-- `initializePeerConnection()`: Khởi tạo WebRTC peer connection
-- `socket.on("offer")`: Nhận WebRTC offer từ bên kia
-- `socket.on("answer")`: Nhận WebRTC answer từ bên kia
-- `socket.on("iceCandidate")`: Nhận ICE candidates để thiết lập connection
+1. **Lắng nghe cuộc gọi đến**:
+   - `socket.on("incomingCall")`: Nhận thông báo cuộc gọi từ server
+   - `handleIncomingCall()`: Hiển thị modal "Incoming Call" với nút Accept/Reject
+
+2. **Xử lý chấp nhận cuộc gọi**:
+   - `socket.on("callAccepted")`: Nhận thông báo cuộc gọi được chấp nhận
+   - `initializePeerConnection()`: Khởi tạo WebRTC peer connection để bắt đầu video call
+
+3. **WebRTC Signaling**:
+   - `socket.on("offer")`: Nhận WebRTC offer từ bên kia (chứa thông tin media)
+   - `socket.on("answer")`: Nhận WebRTC answer từ bên kia (phản hồi offer)
+   - `socket.on("iceCandidate")`: Nhận ICE candidates để thiết lập kết nối P2P
+
+4. **Flow hoàn chỉnh**:
+   - User A gọi → User B nhận → User B accept → Exchange offer/answer → P2P connection established
 
 ---
 
@@ -359,14 +409,24 @@ export const getMessages = async (req, res) => {
 ```
 
 **Cách hoạt động:**
-- `$or`: MongoDB operator - tìm tin nhắn thỏa mãn 1 trong 2 điều kiện
-- `updateMany()`: Cập nhật nhiều document cùng lúc (đánh dấu đã đọc)
-- `aggregate()`: MongoDB aggregation pipeline để tính toán phức tạp
-- `$match`: Lọc documents theo điều kiện (tin nhắn chưa đọc)
-- `$group`: Nhóm documents theo senderId
-- `$sum: 1`: Đếm số documents trong mỗi group
-- `unreadMap`: Chuyển đổi kết quả thành object {userId: count}
-- `io.to(socketId).emit()`: Gửi cập nhật unread counts qua socket
+1. **Lấy tin nhắn giữa 2 user**:
+   - `$or`: MongoDB operator tìm tin nhắn thỏa mãn 1 trong 2 điều kiện:
+     - User A gửi cho User B
+     - User B gửi cho User A
+
+2. **Đánh dấu tin nhắn đã đọc**:
+   - `updateMany()`: Cập nhật tất cả tin nhắn từ user kia gửi cho mình thành `isRead: true`
+
+3. **Tính toán unread counts**:
+   - `$match`: Lọc tin nhắn chưa đọc (`isRead: false`) và không phải tin nhắn nhóm
+   - `$group`: Nhóm tin nhắn theo `senderId` (người gửi)
+   - `$sum: 1`: Đếm số tin nhắn chưa đọc từ mỗi người gửi
+
+4. **Chuyển đổi dữ liệu**:
+   - `unreadMap`: Chuyển từ array thành object {userId: count} để dễ sử dụng
+
+5. **Real-time update**:
+   - `io.to(socketId).emit()`: Gửi cập nhật unread counts qua socket để UI hiển thị badge số tin nhắn chưa đọc
 
 ---
 
